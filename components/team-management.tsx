@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 import { useAssignmentStore } from '@/lib/store'
@@ -12,7 +12,17 @@ export function TeamManagement() {
   const [newMember, setNewMember] = useState('')
   const [capacity, setCapacity] = useState<string>('')
   const [isAdding, setIsAdding] = useState(false)
+  const [shouldFocus, setShouldFocus] = useState(false)
+  const inputRef = useRef<HTMLInputElement>(null)
   const { teamMembers, addTeamMember, removeTeamMember } = useAssignmentStore()
+
+  // Effect to handle focusing
+  useEffect(() => {
+    if (shouldFocus && !isAdding) {
+      inputRef.current?.focus()
+      setShouldFocus(false)
+    }
+  }, [shouldFocus, isAdding])
 
   const handleAddMember = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -27,6 +37,7 @@ export function TeamManagement() {
       toast.success('Team member added', {
         description: `${newMember.trim()} has been added to the team${maxPoints ? ` with ${maxPoints} points capacity` : ''}.`
       })
+      setShouldFocus(true)
     } catch (error) {
       toast.error('Failed to add team member')
     } finally {
@@ -41,6 +52,11 @@ export function TeamManagement() {
     })
   }
 
+  const handleClearInput = () => {
+    setNewMember('')
+    inputRef.current?.focus()
+  }
+
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-2 text-white">
@@ -52,6 +68,7 @@ export function TeamManagement() {
         <div className="flex-1 flex gap-2">
           <div className="relative flex-1">
             <Input
+              ref={inputRef}
               placeholder="Add team member..."
               value={newMember}
               onChange={(e) => setNewMember(e.target.value)}
@@ -62,7 +79,7 @@ export function TeamManagement() {
             {newMember && (
               <button
                 type="button"
-                onClick={() => setNewMember('')}
+                onClick={handleClearInput}
                 className="absolute right-2 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-zinc-200"
               >
                 <X className="h-4 w-4" />
