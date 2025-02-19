@@ -4,10 +4,10 @@ import { useAssignmentStore } from '@/lib/store'
 import type { Story } from '@/lib/store'
 import { motion, AnimatePresence } from 'framer-motion'
 import { ChevronRight, ListChecks, GripVertical } from 'lucide-react'
-import { DndContext, DragEndEvent, MouseSensor, TouchSensor, useSensor, useSensors, DragStartEvent, DragOverlay, useDraggable, useDroppable } from '@dnd-kit/core'
+import { DndContext, DragEndEvent, MouseSensor, TouchSensor, useSensor, useSensors, DragStartEvent, DragOverlay, useDraggable, useDroppable, KeyboardSensor } from '@dnd-kit/core'
 import { pointerWithin } from '@dnd-kit/core'
 import { toast } from 'sonner'
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { cn } from '@/lib/utils'
 
 function capitalizeFirstLetter(str: string) {
@@ -18,13 +18,27 @@ interface StoryItemProps {
   story: Story
   isDragging?: boolean
   isOverlay?: boolean
+  onFocusChange?: (id: string | null) => void
 }
 
-function StoryItem({ story, isDragging, isOverlay }: StoryItemProps) {
+function StoryItem({ story, isDragging, isOverlay, onFocusChange }: StoryItemProps) {
   const { attributes, listeners, setNodeRef } = useDraggable({
     id: story.id,
     disabled: isOverlay
   })
+
+  const combinedAttributes = {
+    ...attributes,
+    role: "button",
+    "aria-label": `Story: ${story.title}, Points: ${story.points}`,
+    onFocus: (e: React.FocusEvent) => {
+      const target = e.target as HTMLElement
+      if (target.getAttribute('role') === 'button') {
+        onFocusChange?.(story.id)
+      }
+    },
+    onBlur: () => onFocusChange?.(null)
+  }
 
   return (
     <motion.div
@@ -33,14 +47,15 @@ function StoryItem({ story, isDragging, isOverlay }: StoryItemProps) {
       animate={{ opacity: 1, x: 0 }}
       exit={{ opacity: 0, x: 20 }}
       className={cn(
-        "flex items-center gap-3 rounded bg-[#323238] px-3 py-2 transition-colors group",
+        "flex items-center gap-3 rounded bg-[#323238] px-3 py-2 transition-colors group outline-none",
         isDragging ? "opacity-30" : "hover:bg-[#3F3F46]",
-        isOverlay && "shadow-2xl ring-2 ring-indigo-500/50 cursor-grabbing"
+        isOverlay && "shadow-2xl ring-2 ring-indigo-500/50 cursor-grabbing",
+        "focus-visible:ring-2 focus-visible:ring-indigo-500"
       )}
-      {...attributes}
+      {...combinedAttributes}
     >
       <div className="flex-1 min-w-0 flex items-center gap-2">
-        <div {...listeners} className="touch-none">
+        <div {...listeners} className="touch-none focus:outline-none">
           <GripVertical className="h-4 w-4 text-zinc-600 opacity-0 group-hover:opacity-100 cursor-grab active:cursor-grabbing" />
         </div>
         <p className="text-sm text-white truncate">{story.title}</p>
@@ -73,18 +88,86 @@ export function AssignmentResults() {
   const { stories, teamMembers, updateStoryAssignee } = useAssignmentStore()
   const [activeId, setActiveId] = useState<string | null>(null)
   const [draggedStory, setDraggedStory] = useState<Story | null>(null)
+  const [focusedStoryId, setFocusedStoryId] = useState<string | null>(null)
 
-  const clearAllAssignments = () => {
-    stories.forEach(story => {
-      if (story.assignee) {
-        updateStoryAssignee(story.id, undefined)
+  const memberMap = new Map(teamMembers.map(member => [member.id, member]))
+  type MemberData = { stories: Story[], totalPoints: number }
+  const storiesByMember = new Map<string, MemberData>(
+    teamMembers.map(member => [member.id, { stories: [], totalPoints: 0 }])
+  )
+  
+  // Fill in the stories for members who have them
+  stories
+    .filter(story => story.assignee)
+    .forEach(story => {
+      const memberId = story.assignee!
+      const memberData = storiesByMember.get(memberId)!
+      memberData.stories.push(story)
+      memberData.totalPoints += story.points
+    })
+
+  // Keyboard navigation
+  useEffect(() => {
+    function handleKeyDown(e: KeyboardEvent) {
+      if (!focusedStoryId) return
+
+      const story = stories.find(s => s.id === focusedStoryId)
+      if (!story) return
+
+      // Get all team members without stories
+      const availableMembers = Array.from(storiesByMember.entries())
+        .filter(([_, data]) => data.stories.length === 0)
+        .map(([id]) => id)
+
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault()
+        // Toggle drag mode
+        if (activeId) {
+          setActiveId(null)
+          setDraggedStory(null)
+        } else {
+          setActiveId(focusedStoryId)
+          setDraggedStory(story)
+        }
       }
-    })
-    toast.info('All assignments cleared', {
-      description: 'All stories have been moved to unassigned',
-      className: 'bg-zinc-950 border-zinc-900'
-    })
-  }
+
+      if (activeId) {
+        switch (e.key) {
+          case 'Escape':
+            setActiveId(null)
+            setDraggedStory(null)
+            break
+          case '1': case '2': case '3': case '4': case '5': case '6': case '7': case '8': case '9':
+            const index = parseInt(e.key) - 1
+            if (index < availableMembers.length) {
+              const memberId = availableMembers[index]
+              const member = memberMap.get(memberId)
+              if (member) {
+                const currentPoints = storiesByMember.get(memberId)?.totalPoints || 0
+                if (!member.maxPoints || currentPoints + story.points <= member.maxPoints) {
+                  updateStoryAssignee(story.id, memberId)
+                  toast.success('Story reassigned', {
+                    description: `Assigned to ${member.name}`,
+                    className: 'bg-emerald-950 border-emerald-900'
+                  })
+                } else {
+                  toast.error('Cannot assign story - Capacity limit exceeded', {
+                    description: `${member.name} has a capacity of ${member.maxPoints} points`,
+                    className: 'bg-red-950 border-red-900'
+                  })
+                }
+              }
+              setActiveId(null)
+              setDraggedStory(null)
+            }
+            break
+        }
+      }
+    }
+
+    document.addEventListener('keydown', handleKeyDown)
+    return () => document.removeEventListener('keydown', handleKeyDown)
+  }, [focusedStoryId, activeId, stories, storiesByMember, memberMap, updateStoryAssignee])
 
   const sensors = useSensors(
     useSensor(MouseSensor, {
@@ -97,8 +180,21 @@ export function AssignmentResults() {
         delay: 100,
         tolerance: 5,
       },
-    })
+    }),
+    useSensor(KeyboardSensor)
   )
+
+  const clearAllAssignments = () => {
+    stories.forEach(story => {
+      if (story.assignee) {
+        updateStoryAssignee(story.id, undefined)
+      }
+    })
+    toast.info('All assignments cleared', {
+      description: 'All stories have been moved to unassigned',
+      className: 'bg-zinc-950 border-zinc-900'
+    })
+  }
 
   const handleDragStart = (event: DragStartEvent) => {
     setActiveId(event.active.id as string)
@@ -156,20 +252,6 @@ export function AssignmentResults() {
   const assignedStories = stories.filter(story => story.assignee)
   const unassignedStories = stories.filter(story => !story.assignee)
   if (stories.length === 0) return null
-
-  const memberMap = new Map(teamMembers.map(member => [member.id, member]))
-  type MemberData = { stories: Story[], totalPoints: number }
-  const storiesByMember = new Map<string, MemberData>(
-    teamMembers.map(member => [member.id, { stories: [], totalPoints: 0 }])
-  )
-  
-  // Fill in the stories for members who have them
-  assignedStories.forEach(story => {
-    const memberId = story.assignee!
-    const memberData = storiesByMember.get(memberId)!
-    memberData.stories.push(story)
-    memberData.totalPoints += story.points
-  })
 
   const totalPoints = Array.from(storiesByMember.values()).reduce((acc, { totalPoints }) => acc + totalPoints, 0)
   const averagePoints = storiesByMember.size > 0 ? totalPoints / storiesByMember.size : 0
@@ -303,6 +385,7 @@ export function AssignmentResults() {
                       key={story.id} 
                       story={story}
                       isDragging={activeId === story.id}
+                      onFocusChange={setFocusedStoryId}
                     />
                   ))}
                 </div>
@@ -397,6 +480,7 @@ export function AssignmentResults() {
                                   key={story.id} 
                                   story={story}
                                   isDragging={activeId === story.id}
+                                  onFocusChange={setFocusedStoryId}
                                 />
                               ))
                             )}
@@ -428,6 +512,18 @@ export function AssignmentResults() {
             <StoryItem story={activeStory} isOverlay />
           )}
         </DragOverlay>
+
+        {/* Add keyboard shortcuts help */}
+        {activeId && (
+          <div className="fixed bottom-4 right-4 p-4 rounded-lg bg-[#27272A] text-sm text-zinc-300 shadow-lg ring-1 ring-inset ring-[#3F3F46]">
+            <p className="font-medium text-white mb-2">Keyboard Shortcuts</p>
+            <ul className="space-y-1">
+              <li><kbd className="px-2 py-1 rounded bg-[#3F3F46]">1</kbd> - <kbd className="px-2 py-1 rounded bg-[#3F3F46]">9</kbd> Assign to team member</li>
+              <li><kbd className="px-2 py-1 rounded bg-[#3F3F46]">Esc</kbd> Cancel assignment</li>
+              <li><kbd className="px-2 py-1 rounded bg-[#3F3F46]">Space</kbd> / <kbd className="px-2 py-1 rounded bg-[#3F3F46]">Enter</kbd> Select story</li>
+            </ul>
+          </div>
+        )}
       </div>
     </DndContext>
   )
