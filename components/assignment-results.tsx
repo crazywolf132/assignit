@@ -5,7 +5,7 @@ import type { Story } from '@/lib/store'
 import { motion, AnimatePresence } from 'framer-motion'
 import { ChevronRight, ListChecks, GripVertical } from 'lucide-react'
 import { DndContext, DragEndEvent, MouseSensor, TouchSensor, useSensor, useSensors, DragStartEvent, DragOverlay, useDraggable, useDroppable } from '@dnd-kit/core'
-import { restrictToVerticalAxis } from '@dnd-kit/modifiers'
+import { pointerWithin } from '@dnd-kit/core'
 import { toast } from 'sonner'
 import { useState } from 'react'
 import { cn } from '@/lib/utils'
@@ -52,7 +52,7 @@ function StoryItem({ story, isDragging, isOverlay }: StoryItemProps) {
   )
 }
 
-function DroppableSection({ id, children, className }: { id: string, children: React.ReactNode, className?: string }) {
+function DroppableSection({ id, children, className, isInvalid }: { id: string, children: React.ReactNode, className?: string, isInvalid?: boolean }) {
   const { isOver, setNodeRef } = useDroppable({ id })
   
   return (
@@ -60,7 +60,8 @@ function DroppableSection({ id, children, className }: { id: string, children: R
       ref={setNodeRef}
       className={cn(
         className,
-        isOver && "ring-2 ring-indigo-500/50"
+        isOver && !isInvalid && "ring-2 ring-indigo-500/50",
+        isOver && isInvalid && "ring-2 ring-red-500/50"
       )}
     >
       {children}
@@ -71,6 +72,19 @@ function DroppableSection({ id, children, className }: { id: string, children: R
 export function AssignmentResults() {
   const { stories, teamMembers, updateStoryAssignee } = useAssignmentStore()
   const [activeId, setActiveId] = useState<string | null>(null)
+  const [draggedStory, setDraggedStory] = useState<Story | null>(null)
+
+  const clearAllAssignments = () => {
+    stories.forEach(story => {
+      if (story.assignee) {
+        updateStoryAssignee(story.id, undefined)
+      }
+    })
+    toast.info('All assignments cleared', {
+      description: 'All stories have been moved to unassigned',
+      className: 'bg-zinc-950 border-zinc-900'
+    })
+  }
 
   const sensors = useSensors(
     useSensor(MouseSensor, {
@@ -88,10 +102,15 @@ export function AssignmentResults() {
 
   const handleDragStart = (event: DragStartEvent) => {
     setActiveId(event.active.id as string)
+    const story = stories.find(s => s.id === event.active.id)
+    if (story) {
+      setDraggedStory(story)
+    }
   }
 
   const handleDragEnd = (event: DragEndEvent) => {
     setActiveId(null)
+    setDraggedStory(null)
     const { active, over } = event
     if (!over) return
 
@@ -161,9 +180,9 @@ export function AssignmentResults() {
   return (
     <DndContext
       sensors={sensors}
-      modifiers={[restrictToVerticalAxis]}
       onDragStart={handleDragStart}
       onDragEnd={handleDragEnd}
+      collisionDetection={pointerWithin}
     >
       <div className="space-y-6">
         <div className="flex items-center gap-2 text-white">
@@ -211,7 +230,7 @@ export function AssignmentResults() {
                     <h4 className="text-xs font-medium text-zinc-500">Available Team Members</h4>
                     <div className="h-px flex-1 bg-zinc-800" />
                   </div>
-                  <div className="flex flex-wrap gap-2">
+                  <div className="grid grid-cols-[repeat(auto-fill,minmax(120px,1fr))] gap-2">
                     {emptyMembers.map(([memberId]) => {
                       const member = memberMap.get(memberId)
                       if (!member) return null
@@ -220,10 +239,15 @@ export function AssignmentResults() {
                         <DroppableSection
                           key={memberId}
                           id={`member-${memberId}`}
-                          className="rounded-lg bg-[#27272A] ring-1 ring-inset ring-[#3F3F46] overflow-hidden
-                            hover:ring-[#52525B] transition-colors w-[120px]"
+                          className="rounded-lg bg-[#27272A] ring-1 ring-inset ring-[#3F3F46] overflow-hidden min-w-[120px] isolate transition-all duration-150 hover:ring-[#52525B]"
+                          isInvalid={(() => {
+                            if (!draggedStory) return false
+                            if (!member.maxPoints) return false
+                            const currentPoints = storiesByMember.get(memberId)?.totalPoints || 0
+                            return currentPoints + draggedStory.points > member.maxPoints
+                          })()}
                         >
-                          <div className="p-4 flex flex-col items-center gap-2 h-[120px] justify-center text-center">
+                          <div className="p-4 flex flex-col items-center gap-2 h-[120px] justify-center text-center relative">
                             <h3 className="text-sm font-medium text-white">
                               {capitalizeFirstLetter(member.name)}
                             </h3>
@@ -326,6 +350,13 @@ export function AssignmentResults() {
                           key={memberId}
                           id={`member-${memberId}`}
                           className="rounded-lg bg-[#27272A] ring-1 ring-inset ring-[#3F3F46] overflow-hidden"
+                          isInvalid={(() => {
+                            if (!draggedStory) return false
+                            const member = memberMap.get(memberId)
+                            if (!member?.maxPoints) return false
+                            const currentPoints = storiesByMember.get(memberId)?.totalPoints || 0
+                            return currentPoints + draggedStory.points > member.maxPoints
+                          })()}
                         >
                           <div className="flex items-center justify-between p-4 bg-[#323238]">
                             <div>
@@ -380,6 +411,17 @@ export function AssignmentResults() {
             return null
           })()}
         </motion.div>
+
+        {assignedStories.length > 0 && (
+          <button
+            onClick={clearAllAssignments}
+            className="inline-flex items-center gap-2 px-3 py-1.5 text-sm font-medium rounded-lg
+              bg-red-500/10 text-red-200 ring-1 ring-inset ring-red-500/20
+              hover:bg-red-500/20 hover:ring-red-500/30 transition-colors"
+          >
+            Clear all assignments
+          </button>
+        )}
 
         <DragOverlay>
           {activeStory && (
